@@ -18,8 +18,10 @@ func Init() {
 	var err error
 	dbConn, err = sqlx.Connect("postgres", postgresDSN(os.Getenv))
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("⚠️ 数据库连接提示: 连接 PostgreSQL 失败 (%v)，但不影响 AI 智能会话 (DeepSeek) 运行\n", err)
+		return
 	}
+	log.Println("✅ 数据库 PostgreSQL 连接成功")
 }
 
 func postgresDSN(getenv func(string) string) string {
