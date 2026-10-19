@@ -3,11 +3,12 @@ name: 自动部署 Mini-Agent 到阿里云
 on:
   push:
     branches:
-      - main  # 当代码推送到 main 分支时自动触发流水线
+      - main
+  workflow_dispatch:  # 支持在 GitHub 页面上随时手动点击“Run workflow”部署
 
 jobs:
   build-and-deploy:
-    runs-on: ubuntu-latest  # 使用 GitHub 提供的免费 Ubuntu 云构建机
+    runs-on: ubuntu-latest
 
     steps:
       # 1. 检出 GitHub 仓库源码
@@ -41,16 +42,13 @@ jobs:
           go-version: "1.24"
           cache-dependency-path: backend/go.sum
 
-      # 5. 跨平台交叉编译 Go 后端（目标系统：Linux amd64）
+      # 5. 跨平台交叉编译 Go 后端（Linux amd64）
       - name: 编译 Go 后端
         run: |
           cd backend
-          # CGO_ENABLED=0 生成纯静态无依赖二进制
-          # GOOS=linux GOARCH=amd64 确保可在阿里云 Linux 服务器直接执行
-          # -ldflags="-s -w" 压缩去除调试符号，减小二进制体积
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o server main.go
 
-      # 6. 将构建产物传输到阿里云宝塔服务器
+      # 6. 将构建产物传输到阿里云服务器
       - name: 上传构建文件到服务器
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -58,12 +56,11 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           port: ${{ secrets.SERVER_PORT || 22 }}
-          # 传输前端打包产物 (dist)
           source: "frontend/dist/**,backend/server,backend/public/**,backend/.env_rename_me"
           target: "/www/wwwroot/mini-agent"
           strip_components: 0
 
-      # 7. 登录服务器执行部署与重启命令
+      # 7. 登录服务器执行部署与启动
       - name: 重启后端服务
         uses: appleboy/ssh-action@v1.2.0
         with:
@@ -71,32 +68,26 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           port: ${{ secrets.SERVER_PORT || 22 }}
-          script_stop: true
           script: |
-            cd /www/wwwroot/mini-agent/backend
+            cd /www/wwwroot/mini-agent/backend || exit 1
             chmod +x server
 
-            # 如果服务器上还没有 .env，生成默认配置并填充必要密钥
+            # 初始化 .env（首次部署时使用 openssl 安全生成随机密钥）
             if [ ! -f ".env" ]; then
               cp .env_rename_me .env
-              KEY1=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1)
-              KEY2=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1)
+              KEY1=$(openssl rand -hex 32 2>/dev/null || echo "secret_access_key_mini_agent_123")
+              KEY2=$(openssl rand -hex 32 2>/dev/null || echo "secret_refresh_key_mini_agent_456")
               sed -i "s/ACCESS_SECRET=/ACCESS_SECRET=${KEY1}/g" .env
               sed -i "s/REFRESH_SECRET=/REFRESH_SECRET=${KEY2}/g" .env
               sed -i "s/SSL=TRUE/SSL=FALSE/g" .env
-              echo ">>> 已自动初始化服务器 .env 文件"
+              echo ">>> 首次部署：已自动初始化 .env 文件"
             fi
 
-            # 重启后端服务
-            if command -v supervisorctl &> /dev/null && supervisorctl status mini-agent &> /dev/null; then
-              supervisorctl restart mini-agent
-              echo ">>> 已通过 Supervisor 重启 mini-agent 服务"
-            else
-              # 杀死旧进程并完全脱离终端启动（关闭所有标准输入输出句柄并执行 disown）
-              pkill -f "./server" || true
-              sleep 1
-              nohup ./server > app.log 2>&1 < /dev/null &
-              disown
-              sleep 1
-              echo ">>> 后端服务已脱离 SSH 守护运行成功"
-            fi
+            # 停止占用 9000 端口的旧进程
+            fuser -k 9000/tcp 2>/dev/null || pkill -f "./server" || true
+            sleep 1
+
+            # 启动新后端服务并脱离会话
+            nohup ./server > app.log 2>&1 < /dev/null &
+            sleep 1
+            echo ">>> Mini-Agent 后端已成功在服务器启动！"
