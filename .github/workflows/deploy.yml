@@ -1,0 +1,98 @@
+name: 自动部署 Mini-Agent 到阿里云
+
+on:
+  push:
+    branches:
+      - main  # 当代码推送到 main 分支时自动触发流水线
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest  # 使用 GitHub 提供的免费 Ubuntu 云构建机
+
+    steps:
+      # 1. 检出 GitHub 仓库源码
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      # 2. 安装 pnpm 与 Node.js 环境
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 10
+
+      - name: 配置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "pnpm"
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      # 3. 前端依赖安装与打包
+      - name: 构建前端
+        run: |
+          cd frontend
+          pnpm install
+          pnpm build
+
+      # 4. 配置 Go 编译环境
+      - name: 配置 Go 环境
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: backend/go.sum
+
+      # 5. 跨平台交叉编译 Go 后端（目标系统：Linux amd64）
+      - name: 编译 Go 后端
+        run: |
+          cd backend
+          # CGO_ENABLED=0 生成纯静态无依赖二进制
+          # GOOS=linux GOARCH=amd64 确保可在阿里云 Linux 服务器直接执行
+          # -ldflags="-s -w" 压缩去除调试符号，减小二进制体积
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o server main.go
+
+      # 6. 将构建产物传输到阿里云宝塔服务器
+      - name: 上传构建文件到服务器
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          # 传输前端打包产物 (dist)
+          source: "frontend/dist/**,backend/server,backend/public/**,backend/.env_rename_me"
+          target: "/www/wwwroot/mini-agent"
+          strip_components: 0
+
+      # 7. 登录服务器执行部署与重启命令
+      - name: 重启后端服务
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
+          script: |
+            # 1. 确保目录和可执行权限
+            cd /www/wwwroot/mini-agent/backend
+            chmod +x server
+
+            # 2. 如果服务器上还没有 .env，复制模板并提示
+            if [ ! -f ".env" ]; then
+              cp .env_rename_me .env
+              echo ">>> 首次部署：已生成 .env，请在宝塔中填入你的百炼 DEEPSEEK_API_KEY 与数据库配置"
+            fi
+
+            # 3. 重启后端服务
+            # 如果你在宝塔的「Supervisor管理器」中添加了名为 mini-agent 的守护进程：
+            if command -v supervisorctl &> /dev/null && supervisorctl status mini-agent &> /dev/null; then
+              supervisorctl restart mini-agent
+              echo ">>> 已通过 Supervisor 重启 mini-agent 服务"
+            else
+              # 兜底方式：平滑杀掉旧进程并以后台守护模式启动
+              pkill -f "/www/wwwroot/mini-agent/backend/server" || true
+              sleep 1
+              nohup ./server > app.log 2>&1 &
+              echo ">>> 已通过 nohup 守护启动后端服务，日志输出至 app.log"
+            fi
