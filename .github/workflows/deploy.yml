@@ -56,7 +56,7 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           port: ${{ secrets.SERVER_PORT || 22 }}
-          source: "frontend/dist/**,backend/server,backend/public/**,backend/.env_rename_me"
+          source: "frontend/dist/**,backend/server,backend/public/**,backend/.env_rename_me,backend/deploy-server.sh"
           target: "/www/wwwroot/mini-agent"
           strip_components: 0
 
@@ -68,26 +68,4 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           port: ${{ secrets.SERVER_PORT || 22 }}
-          script: |
-            cd /www/wwwroot/mini-agent/backend || exit 1
-            chmod +x server
-
-            # 初始化 .env（首次部署时使用 openssl 安全生成随机密钥）
-            if [ ! -f ".env" ]; then
-              cp .env_rename_me .env
-              KEY1=$(openssl rand -hex 32 2>/dev/null || echo "secret_access_key_mini_agent_123")
-              KEY2=$(openssl rand -hex 32 2>/dev/null || echo "secret_refresh_key_mini_agent_456")
-              sed -i "s/ACCESS_SECRET=/ACCESS_SECRET=${KEY1}/g" .env
-              sed -i "s/REFRESH_SECRET=/REFRESH_SECRET=${KEY2}/g" .env
-              sed -i "s/SSL=TRUE/SSL=FALSE/g" .env
-              echo ">>> 首次部署：已自动初始化 .env 文件"
-            fi
-
-            # 停止占用 9000 端口的旧进程
-            fuser -k 9000/tcp 2>/dev/null || pkill -f "./server" || true
-            sleep 1
-
-            # 启动新后端服务并脱离会话
-            nohup ./server > app.log 2>&1 < /dev/null &
-            sleep 1
-            echo ">>> Mini-Agent 后端已成功在服务器启动！"
+          script: bash /www/wwwroot/mini-agent/backend/deploy-server.sh
