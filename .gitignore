@@ -1,0 +1,28 @@
+# OS
+.DS_Store
+.DS_Store?
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/*.local
+frontend/.eslintcache
+frontend/report.html
+frontend/vite.config.*.timestamp*
+frontend/tsconfig.tsbuildinfo
+
+# Backend
+backend/.env
+backend/*.log
+backend/cert/
+backend/.cache/
+backend/gin-boilerplate
+
+# IDE
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
