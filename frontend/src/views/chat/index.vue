@@ -7,11 +7,20 @@ defineOptions({
   name: "AiChat"
 });
 
+//1.定义工具状态数据接口
+interface ToolInfo {
+  name: string;
+  args?: string;
+  result?: string;
+  status: "calling" | "done";
+}
+// 
 interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
   reasoning?: string;
+  tool?: ToolInfo;
   timestamp: string;
 }
 
@@ -30,7 +39,7 @@ const messages = ref<ChatMessage[]>([
   {
     id: "welcome",
     role: "assistant",
-    content: "👋 你好！我是由**阿里云百炼 (DeepSeek)** 驱动的 AI 智能助手。\n\n当前已打通 Go Gin 后端与 HTTP SSE 流式打字机通道，并已支持深度思考过程展示，你可以向我提问任何问题！",
+    content: "👋 你好！我们随时开始！",
     timestamp: new Date().toLocaleTimeString()
   }
 ]);
@@ -126,10 +135,22 @@ const handleSend = async () => {
             if (parsed.error) {
               ElMessage.error(parsed.error);
             } else if (targetMsg) {
+              //1.思考过程收集
               if (parsed.reasoning) {
                 targetMsg.reasoning = (targetMsg.reasoning || "") + parsed.reasoning;
                 scrollToBottom();
               }
+              //2.工具调用状态解析
+              if (parsed.tool_name) {
+                targetMsg.tool = {
+                  name: parsed.tool_name,
+                  args: parsed.tool_args || targetMsg.tool.args,
+                  result: parsed.tool_result || targetMsg.tool?.result,
+                  status: parsed.tool_status || "calling"
+                }
+                scrollToBottom()
+              }
+              //3.正文回答收集
               if (parsed.content) {
                 targetMsg.content += parsed.content;
                 scrollToBottom();
@@ -195,12 +216,7 @@ onMounted(() => {
 
     <!-- 消息列表区 -->
     <main ref="chatListRef" class="chat-messages">
-      <div
-        v-for="msg in messages"
-        :key="msg.id"
-        class="message-row"
-        :class="msg.role"
-      >
+      <div v-for="msg in messages" :key="msg.id" class="message-row" :class="msg.role">
         <div class="avatar">
           <span v-if="msg.role === 'user'">👤</span>
           <span v-else>🤖</span>
@@ -218,18 +234,37 @@ onMounted(() => {
               </summary>
               <div class="thought-text">{{ msg.reasoning }}</div>
             </details>
+            <!-- ⚙️ 外部工具调用状态卡片 -->
+            <div v-if="msg.tool" class="tool-call-box" :class="msg.tool.status">
+              <div class="tool-call-header">
+                <div class="tool-icon-wrap">
+                  <span v-if="msg.tool.status === 'calling'" class="tool-spin">⚙️</span>
+                  <span v-else class="tool-check">✅</span>
+                </div>
+                <div class="tool-title">
+                  <span class="tool-label">
+                    {{ msg.tool.status === 'calling' ? '智能体正在调用工具' : '已完成工具调用' }}:
+                  </span>
+                  <span class="tool-name">{{ msg.tool.name }}</span>
+                </div>
+              </div>
 
+              <!-- 参数与执行结果折叠展示 -->
+              <div class="tool-call-body">
+                <div v-if="msg.tool.args" class="tool-item">
+                  <span class="item-label">提取入参:</span>
+                  <code class="item-code">{{ msg.tool.args }}</code>
+                </div>
+                <div v-if="msg.tool.result" class="tool-item">
+                  <span class="item-label">执行结果:</span>
+                  <code class="item-code result">{{ msg.tool.result }}</code>
+                </div>
+              </div>
+            </div>
             <!-- 正文内容 -->
-            <div
-              v-if="msg.content"
-              class="markdown-body"
-              v-html="md.render(msg.content)"
-            />
+            <div v-if="msg.content" class="markdown-body" v-html="md.render(msg.content)" />
             <!-- 正在思考/等待指示器 -->
-            <div
-              v-else-if="isStreaming && msg.role === 'assistant'"
-              class="typing-indicator"
-            >
+            <div v-else-if="isStreaming && msg.role === 'assistant'" class="typing-indicator">
               <span class="dot" />
               <span class="dot" />
               <span class="dot" />
@@ -242,32 +277,15 @@ onMounted(() => {
     <!-- 底部输入控制台 -->
     <footer class="chat-footer">
       <div class="input-box-wrapper">
-        <el-input
-          v-model="inputPrompt"
-          type="textarea"
-          :rows="3"
-          resize="none"
-          placeholder="输入你的问题，按 Enter 发送，Shift + Enter 换行..."
-          :disabled="isStreaming"
-          @keydown="handleKeyDown"
-        />
+        <el-input v-model="inputPrompt" type="textarea" :rows="3" resize="none"
+          placeholder="输入你的问题，按 Enter 发送，Shift + Enter 换行..." :disabled="isStreaming" @keydown="handleKeyDown" />
         <div class="action-bar">
           <span class="hint-text">由 Go Gin + SSE 流式引擎驱动</span>
           <div class="btn-group">
-            <el-button
-              v-if="isStreaming"
-              type="danger"
-              plain
-              @click="handleStop"
-            >
+            <el-button v-if="isStreaming" type="danger" plain @click="handleStop">
               停止生成
             </el-button>
-            <el-button
-              v-else
-              type="primary"
-              :disabled="!inputPrompt.trim()"
-              @click="handleSend"
-            >
+            <el-button v-else type="primary" :disabled="!inputPrompt.trim()" @click="handleSend">
               发送消息
             </el-button>
           </div>
@@ -465,9 +483,13 @@ onMounted(() => {
 }
 
 @keyframes bounce {
-  0%, 80%, 100% {
+
+  0%,
+  80%,
+  100% {
     transform: scale(0);
   }
+
   40% {
     transform: scale(1);
   }
@@ -499,5 +521,98 @@ onMounted(() => {
 .btn-group {
   display: flex;
   gap: 8px;
+}
+
+/* 工具调用卡片容器 */
+.tool-call-box {
+  margin-bottom: 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 13px;
+  transition: all 0.3s ease;
+}
+
+.tool-call-box.calling {
+  border-color: #93c5fd;
+  background: #eff6ff;
+  box-shadow: 0 0 10px rgba(59, 130, 246, 0.1);
+}
+
+.tool-call-box.done {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.tool-call-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.tool-spin {
+  display: inline-block;
+  animation: spin 2s linear infinite;
+  font-size: 15px;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.tool-label {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.tool-name {
+  color: #1e293b;
+  font-family: monospace;
+  background: rgba(0, 0, 0, 0.05);
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-left: 4px;
+}
+
+.tool-call-body {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-top: 1px dashed rgba(0, 0, 0, 0.08);
+  padding-top: 6px;
+}
+
+.tool-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.item-label {
+  color: #94a3b8;
+  flex-shrink: 0;
+}
+
+.item-code {
+  font-family: Menlo, Monaco, Consolas, monospace;
+  background: rgba(0, 0, 0, 0.04);
+  padding: 2px 6px;
+  border-radius: 4px;
+  word-break: break-all;
+  color: #334155;
+}
+
+.item-code.result {
+  color: #166534;
 }
 </style>
