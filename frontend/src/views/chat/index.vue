@@ -30,6 +30,13 @@ const md = new MarkdownIt({
   breaks: true
 });
 
+// 工具名称友好中文别名映射
+const toolNameMap: Record<string, string> = {
+  get_weather: "实时天气查询"
+};
+
+const getToolDisplayName = (name: string) => toolNameMap[name] || name;
+
 const inputPrompt = ref("");
 const isStreaming = ref(false);
 const chatListRef = ref<HTMLElement | null>(null);
@@ -227,39 +234,46 @@ onMounted(() => {
             <span class="time">{{ msg.timestamp }}</span>
           </div>
           <div class="bubble-content">
-            <!-- 深度思考过程折叠框 -->
-            <details v-if="msg.reasoning" class="thought-box" open>
+            <!-- 深度思考过程折叠框（DeepSeek / ChatGPT 同款：生成时展开，输出答案后自动收起） -->
+            <details v-if="msg.reasoning" class="thought-box" :open="isStreaming && !msg.content">
               <summary class="thought-summary">
-                <span>🧠 深度思考过程</span>
+                <div class="thought-summary-left">
+                  <span>🧠</span>
+                  <span>{{ isStreaming && !msg.content ? '正在深度思考中...' : '已完成深度思考' }}</span>
+                </div>
+                <span class="thought-toggle-hint">{{ isStreaming && !msg.content ? '思考中...' : '展开思考 ›' }}</span>
               </summary>
               <div class="thought-text">{{ msg.reasoning }}</div>
             </details>
-            <!-- ⚙️ 外部工具调用状态卡片 -->
+            <!-- ⚙️ 外部工具调用状态卡片（ChatGPT / 商业级同款可折叠设计） -->
             <div v-if="msg.tool" class="tool-call-box" :class="msg.tool.status">
-              <div class="tool-call-header">
-                <div class="tool-icon-wrap">
-                  <span v-if="msg.tool.status === 'calling'" class="tool-spin">⚙️</span>
-                  <span v-else class="tool-check">✅</span>
-                </div>
-                <div class="tool-title">
-                  <span class="tool-label">
-                    {{ msg.tool.status === 'calling' ? '智能体正在调用工具' : '已完成工具调用' }}:
+              <details class="tool-details" :open="msg.tool.status === 'calling'">
+                <summary class="tool-summary">
+                  <div class="tool-summary-left">
+                    <span v-if="msg.tool.status === 'calling'" class="tool-spin">⚙️</span>
+                    <span v-else class="tool-check">✅</span>
+                    <span class="tool-label">
+                      {{ msg.tool.status === 'calling' ? '正在调用工具' : '已调用工具' }}：
+                    </span>
+                    <span class="tool-name">{{ getToolDisplayName(msg.tool.name) }}</span>
+                  </div>
+                  <span class="tool-toggle-hint">
+                    {{ msg.tool.status === 'calling' ? '执行中...' : '详情 ›' }}
                   </span>
-                  <span class="tool-name">{{ msg.tool.name }}</span>
-                </div>
-              </div>
+                </summary>
 
-              <!-- 参数与执行结果折叠展示 -->
-              <div class="tool-call-body">
-                <div v-if="msg.tool.args" class="tool-item">
-                  <span class="item-label">提取入参:</span>
-                  <code class="item-code">{{ msg.tool.args }}</code>
+                <!-- 参数与执行结果抽屉（默认收起，点击展开） -->
+                <div class="tool-call-body">
+                  <div v-if="msg.tool.args" class="tool-item">
+                    <span class="item-label">提取入参:</span>
+                    <code class="item-code">{{ msg.tool.args }}</code>
+                  </div>
+                  <div v-if="msg.tool.result" class="tool-item">
+                    <span class="item-label">返回数据:</span>
+                    <code class="item-code result">{{ msg.tool.result }}</code>
+                  </div>
                 </div>
-                <div v-if="msg.tool.result" class="tool-item">
-                  <span class="item-label">执行结果:</span>
-                  <code class="item-code result">{{ msg.tool.result }}</code>
-                </div>
-              </div>
+              </details>
             </div>
             <!-- 正文内容 -->
             <div v-if="msg.content" class="markdown-body" v-html="md.render(msg.content)" />
@@ -417,24 +431,54 @@ onMounted(() => {
   margin-bottom: 12px;
   background: #f8fafc;
   border-left: 3px solid #38bdf8;
-  padding: 8px 12px;
   border-radius: 6px;
   font-size: 12.5px;
   color: #64748b;
+  overflow: hidden;
+  transition: all 0.3s ease;
 }
 
 .thought-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
   cursor: pointer;
+  user-select: none;
+  list-style: none;
   font-weight: 600;
   color: #0284c7;
-  user-select: none;
-  margin-bottom: 6px;
+}
+
+.thought-summary::-webkit-details-marker {
+  display: none;
+}
+
+.thought-summary-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.thought-toggle-hint {
+  font-size: 11.5px;
+  color: #94a3b8;
+  font-weight: normal;
+  transition: color 0.2s ease;
+}
+
+.thought-summary:hover .thought-toggle-hint {
+  color: #0284c7;
 }
 
 .thought-text {
+  padding: 0 12px 10px 12px;
   white-space: pre-wrap;
   line-height: 1.5;
   color: #475569;
+  border-top: 1px dashed rgba(56, 189, 248, 0.2);
+  margin-top: 4px;
+  padding-top: 8px;
 }
 
 .markdown-body :deep(p) {
@@ -523,15 +567,15 @@ onMounted(() => {
   gap: 8px;
 }
 
-/* 工具调用卡片容器 */
+/* 工具调用卡片容器（ChatGPT 同款精致胶囊折叠卡） */
 .tool-call-box {
   margin-bottom: 12px;
   background: #f8fafc;
   border: 1px solid #e2e8f0;
   border-radius: 8px;
-  padding: 10px 14px;
   font-size: 13px;
   transition: all 0.3s ease;
+  overflow: hidden;
 }
 
 .tool-call-box.calling {
@@ -545,74 +589,98 @@ onMounted(() => {
   background: #f0fdf4;
 }
 
-.tool-call-header {
+.tool-details {
+  width: 100%;
+}
+
+.tool-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+
+.tool-summary::-webkit-details-marker {
+  display: none;
+}
+
+.tool-summary-left {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-weight: 600;
+  font-weight: 500;
+}
+
+.tool-toggle-hint {
+  font-size: 11.5px;
+  color: #94a3b8;
+  transition: color 0.2s ease;
+}
+
+.tool-summary:hover .tool-toggle-hint {
+  color: #0284c7;
 }
 
 .tool-spin {
   display: inline-block;
   animation: spin 2s linear infinite;
-  font-size: 15px;
+  font-size: 14px;
 }
 
 @keyframes spin {
-  from {
-    transform: rotate(0deg);
-  }
-
-  to {
-    transform: rotate(360deg);
-  }
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 .tool-label {
   color: #64748b;
-  font-size: 12px;
+  font-size: 12.5px;
 }
 
 .tool-name {
-  color: #1e293b;
-  font-family: monospace;
+  color: #0f172a;
+  font-weight: 600;
   background: rgba(0, 0, 0, 0.05);
-  padding: 2px 6px;
+  padding: 2px 7px;
   border-radius: 4px;
-  margin-left: 4px;
+  font-size: 12px;
 }
 
 .tool-call-body {
-  margin-top: 8px;
+  padding: 8px 14px 10px 14px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   border-top: 1px dashed rgba(0, 0, 0, 0.08);
-  padding-top: 6px;
+  background: rgba(255, 255, 255, 0.6);
 }
 
 .tool-item {
   display: flex;
   align-items: flex-start;
-  gap: 6px;
+  gap: 8px;
   font-size: 12px;
 }
 
 .item-label {
-  color: #94a3b8;
+  color: #64748b;
   flex-shrink: 0;
+  font-weight: 500;
 }
 
 .item-code {
   font-family: Menlo, Monaco, Consolas, monospace;
   background: rgba(0, 0, 0, 0.04);
-  padding: 2px 6px;
+  padding: 3px 6px;
   border-radius: 4px;
   word-break: break-all;
   color: #334155;
 }
 
 .item-code.result {
-  color: #166534;
+  color: #15803d;
 }
 </style>
