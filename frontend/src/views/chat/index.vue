@@ -12,7 +12,8 @@ interface ToolInfo {
   name: string;
   args?: string;
   result?: string;
-  status: "calling" | "done";
+  status: "calling" | "done" | "require_approval" | "approved" | "rejected";
+  taskId?: string;    // 审批任务唯一 ID
 }
 // 
 interface ChatMessage {
@@ -32,7 +33,8 @@ const md = new MarkdownIt({
 
 // 工具名称友好中文别名映射
 const toolNameMap: Record<string, string> = {
-  get_weather: "实时天气查询"
+  get_weather: "实时天气查询",
+  delete_article: "删除文章/高危数据"
 };
 
 const getToolDisplayName = (name: string) => toolNameMap[name] || name;
@@ -151,9 +153,10 @@ const handleSend = async () => {
               if (parsed.tool_name) {
                 targetMsg.tool = {
                   name: parsed.tool_name,
-                  args: parsed.tool_args || targetMsg.tool.args,
+                  args: parsed.tool_args || targetMsg.tool?.args,
                   result: parsed.tool_result || targetMsg.tool?.result,
-                  status: parsed.tool_status || "calling"
+                  status: parsed.tool_status || "calling",
+                  taskId: parsed.task_id || targetMsg.tool?.taskId
                 }
                 scrollToBottom()
               }
@@ -182,6 +185,57 @@ const handleSend = async () => {
   } finally {
     isStreaming.value = false;
     abortController = null;
+    scrollToBottom();
+  }
+};
+
+const handleApprovalClick = async (msg: ChatMessage, agree: boolean) => {
+  if (!msg.tool || !msg.tool.taskId) return;
+  const taskId = msg.tool.taskId;
+
+  // 1. 更新卡片状态
+  msg.tool.status = agree ? "approved" : "rejected";
+  isStreaming.value = true;
+
+  try {
+    const response = await fetch("/v1/chat/approve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task_id: taskId, agree })
+    });
+
+    if (!response.body) throw new Error("无响应流");
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith("data:")) {
+          const dataStr = trimmed.slice(5).trim();
+          if (dataStr === "[DONE]") break;
+          try {
+            const parsed = JSON.parse(dataStr);
+            if (parsed.content) {
+              msg.content += parsed.content;
+              scrollToBottom();
+            }
+          } catch { }
+        }
+      }
+    }
+  } catch (error: any) {
+    ElMessage.error(error.message || "审批处理失败");
+  } finally {
+    isStreaming.value = false;
     scrollToBottom();
   }
 };
@@ -246,30 +300,57 @@ onMounted(() => {
               <div class="thought-text">{{ msg.reasoning }}</div>
             </details>
             <!-- ⚙️ 外部工具调用状态卡片（ChatGPT / 商业级同款可折叠设计） -->
+            <!-- ⚙️ 外部工具调用状态卡片 -->
             <div v-if="msg.tool" class="tool-call-box" :class="msg.tool.status">
-              <details class="tool-details" :open="msg.tool.status === 'calling'">
+              <!-- A. 处于待审批状态时的危险警告卡片 -->
+              <div v-if="msg.tool.status === 'require_approval'" class="approval-card">
+                <div class="approval-header">
+                  <span class="warning-icon">⚠️</span>
+                  <div class="approval-title-wrap">
+                    <span class="approval-title">高危操作拦截：AI 申请调用【{{ getToolDisplayName(msg.tool.name) }}】</span>
+                    <span class="approval-sub">此操作具有破坏性，必须经过人类授权确认后方可执行。</span>
+                  </div>
+                </div>
+                <div class="tool-call-body" style="background: rgba(0,0,0,0.02)">
+                  <div class="tool-item">
+                    <span class="item-label">目标参数:</span>
+                    <code class="item-code">{{ msg.tool.args }}</code>
+                  </div>
+                </div>
+                <div class="approval-actions">
+                  <el-button type="danger" size="small" @click="handleApprovalClick(msg, true)">
+                    批准执行 (Approve)
+                  </el-button>
+                  <el-button size="small" @click="handleApprovalClick(msg, false)">
+                    拒绝操作 (Reject)
+                  </el-button>
+                </div>
+              </div>
+
+              <!-- B. 已经批准/拒绝或普通工具时的可折叠卡片 -->
+              <details v-else class="tool-details" :open="msg.tool.status === 'calling'">
                 <summary class="tool-summary">
                   <div class="tool-summary-left">
                     <span v-if="msg.tool.status === 'calling'" class="tool-spin">⚙️</span>
+                    <span v-else-if="msg.tool.status === 'approved'" style="color: #e6a23c">⚡</span>
+                    <span v-else-if="msg.tool.status === 'rejected'" style="color: #909399">🚫</span>
                     <span v-else class="tool-check">✅</span>
+
                     <span class="tool-label">
-                      {{ msg.tool.status === 'calling' ? '正在调用工具' : '已调用工具' }}：
+                      {{ msg.tool.status === 'approved' ? '已批准执行' : msg.tool.status === 'rejected' ? '已人工拒绝' : '已调用工具'
+                      }}：
                     </span>
                     <span class="tool-name">{{ getToolDisplayName(msg.tool.name) }}</span>
                   </div>
-                  <span class="tool-toggle-hint">
-                    {{ msg.tool.status === 'calling' ? '执行中...' : '详情 ›' }}
-                  </span>
+                  <span class="tool-toggle-hint">详情 ›</span>
                 </summary>
-
-                <!-- 参数与执行结果抽屉（默认收起，点击展开） -->
                 <div class="tool-call-body">
                   <div v-if="msg.tool.args" class="tool-item">
-                    <span class="item-label">提取入参:</span>
+                    <span class="item-label">入参:</span>
                     <code class="item-code">{{ msg.tool.args }}</code>
                   </div>
                   <div v-if="msg.tool.result" class="tool-item">
-                    <span class="item-label">返回数据:</span>
+                    <span class="item-label">返回:</span>
                     <code class="item-code result">{{ msg.tool.result }}</code>
                   </div>
                 </div>
@@ -631,8 +712,13 @@ onMounted(() => {
 }
 
 @keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .tool-label {
@@ -682,5 +768,53 @@ onMounted(() => {
 
 .item-code.result {
   color: #15803d;
+}
+
+/* 审批卡片警告样式 */
+.tool-call-box.require_approval {
+  border: 1px solid #fed7aa;
+  background: #fff7ed;
+  box-shadow: 0 2px 10px rgba(234, 88, 12, 0.08);
+}
+
+.approval-card {
+  padding: 12px 14px;
+}
+
+.approval-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.warning-icon {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.approval-title-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.approval-title {
+  font-weight: 600;
+  color: #c2410c;
+  font-size: 13px;
+}
+
+.approval-sub {
+  font-size: 11.5px;
+  color: #ea580c;
+}
+
+.approval-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(234, 88, 12, 0.2);
 }
 </style>

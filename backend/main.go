@@ -106,6 +106,7 @@ func main() {
 		/*** START AI Agent Chat ***/
 		chat := new(controllers.ChatController)
 		v1.POST("/chat/stream", chat.Stream)
+		v1.POST("/chat/approve", chat.Approve)
 	}
 
 	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerfiles.Handler))

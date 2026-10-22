@@ -44,6 +44,24 @@ func GetToolDefinitions() []openai.Tool {
 				},
 			},
 		},
+		// 2. 👈 新增高危工具：删除文章
+		{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        "delete_article",
+				Description: "根据文章 ID 删除系统中的文章或笔记。当用户提出删除文章的请求时，直接调用此工具，系统会自动挂起并弹出人工审批卡片供用户安全确认。",
+				Parameters: jsonschema.Definition{
+					Type: jsonschema.Object,
+					Properties: map[string]jsonschema.Definition{
+						"article_id": {
+							Type:        jsonschema.String,
+							Description: "要删除的文章ID，如：88、101",
+						},
+					},
+					Required: []string{"article_id"},
+				},
+			},
+		},
 	}
 }
 
@@ -52,6 +70,8 @@ func ExecuteTool(name string, args string) string {
 	switch name {
 	case "get_weather":
 		return GetWeather(args)
+	case "delete_article": // 👈 新增分发
+		return DeleteArticle(args)
 	default:
 		return fmt.Sprintf(`{"error": "未知工具: %s"}`, name)
 	}
